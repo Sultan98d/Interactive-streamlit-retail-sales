@@ -57,7 +57,7 @@ df = load_data()
 
 
 # =========================================================
-# SIDEBAR + WIDGETS
+# SIDEBAR — THREE WIDGETS
 # =========================================================
 
 st.sidebar.header("Dashboard Controls")
@@ -142,8 +142,10 @@ if resolution == "Monthly":
         .dropna()
     )
 
-    window = 12
-    window_text = "12 months"
+    trend_window = 12
+    uncertainty_window = 12
+    trend_window_text = "12 months"
+    uncertainty_window_text = "12 months"
 
 elif resolution == "Quarterly":
 
@@ -154,8 +156,10 @@ elif resolution == "Quarterly":
         .dropna()
     )
 
-    window = 4
-    window_text = "4 quarters"
+    trend_window = 4
+    uncertainty_window = 4
+    trend_window_text = "4 quarters"
+    uncertainty_window_text = "4 quarters"
 
 else:
 
@@ -166,8 +170,14 @@ else:
         .dropna()
     )
 
-    window = 1
-    window_text = "1 year"
+    # Each yearly observation already summarizes a full year.
+    trend_window = 1
+    trend_window_text = "1 year"
+
+    # A multi-observation window is required for a meaningful
+    # bootstrap interval.
+    uncertainty_window = 3
+    uncertainty_window_text = "3 years"
 
 
 # =========================================================
@@ -199,9 +209,9 @@ col4.metric(
 )
 
 st.caption(
-    f"Trend and uncertainty window: {window_text}. "
-    f"Dashboard settings changed {st.session_state.interaction_count} time(s) "
-    "during this session."
+    f"Trend window: {trend_window_text}. "
+    f"Dashboard settings changed "
+    f"{st.session_state.interaction_count} time(s) during this session."
 )
 
 
@@ -209,7 +219,14 @@ st.caption(
 # TABS — LAYOUT
 # =========================================================
 
-tab_overview, tab_trend, tab_seasonality, tab_uncertainty, tab_data, tab_about = st.tabs(
+(
+    tab_overview,
+    tab_trend,
+    tab_seasonality,
+    tab_uncertainty,
+    tab_data,
+    tab_about
+) = st.tabs(
     [
         "Overview",
         "Trend",
@@ -235,107 +252,110 @@ with tab_overview:
         f"through {year_range[1]}."
     )
 
-    fig, ax = plt.subplots(figsize=(12, 5))
+    if data.empty:
 
-    ax.plot(
-        data.index,
-        data.values
-    )
+        st.warning(
+            "No observations are available for the selected period."
+        )
 
-    ax.set_title(
-        f"U.S. Retail Sales — {resolution} Resolution"
-    )
+    else:
 
-    ax.set_xlabel("Year")
-    ax.set_ylabel("Millions of Dollars")
-    ax.set_ylim(bottom=0)
-    ax.grid(alpha=0.3)
+        fig, ax = plt.subplots(figsize=(12, 5))
 
-    st.pyplot(fig)
-    plt.close(fig)
+        ax.plot(
+            data.index,
+            data.values
+        )
 
+        ax.set_title(
+            f"U.S. Retail Sales — {resolution} Resolution"
+        )
 
-    # -----------------------------------------------------
-    # INTERACTIVE DATE-RANGE BRUSH
-    # -----------------------------------------------------
+        ax.set_xlabel("Year")
+        ax.set_ylabel("Millions of Dollars")
+        ax.set_ylim(bottom=0)
+        ax.grid(alpha=0.3)
 
-    st.subheader("Interactive Date-Range Brush")
+        st.pyplot(fig)
+        plt.close(fig)
 
-    brush_df = data.reset_index()
-    brush_df.columns = ["Date", "Sales"]
+        st.subheader("Interactive Date-Range Brush")
 
-    brush = alt.selection_interval(
-        encodings=["x"],
-        name="DateRange"
-    )
+        brush_df = data.reset_index()
+        brush_df.columns = ["Date", "Sales"]
 
-    main_chart = (
-        alt.Chart(brush_df)
-        .mark_line()
-        .encode(
-            x=alt.X(
-                "Date:T",
-                title="Date",
-                scale=alt.Scale(domain=brush)
-            ),
-            y=alt.Y(
-                "Sales:Q",
-                title="Millions of Dollars",
-                scale=alt.Scale(zero=True)
-            ),
-            tooltip=[
-                alt.Tooltip(
+        brush = alt.selection_interval(
+            encodings=["x"],
+            name="DateRange"
+        )
+
+        main_chart = (
+            alt.Chart(brush_df)
+            .mark_line()
+            .encode(
+                x=alt.X(
+                    "Date:T",
+                    title="Date",
+                    scale=alt.Scale(domain=brush)
+                ),
+                y=alt.Y(
+                    "Sales:Q",
+                    title="Millions of Dollars",
+                    scale=alt.Scale(zero=True)
+                ),
+                tooltip=[
+                    alt.Tooltip(
+                        "Date:T",
+                        title="Date"
+                    ),
+                    alt.Tooltip(
+                        "Sales:Q",
+                        title="Sales",
+                        format=",.0f"
+                    )
+                ]
+            )
+            .properties(
+                height=350,
+                title="Selected Date Range"
+            )
+        )
+
+        overview_chart = (
+            alt.Chart(brush_df)
+            .mark_line()
+            .encode(
+                x=alt.X(
                     "Date:T",
                     title="Date"
                 ),
-                alt.Tooltip(
+                y=alt.Y(
                     "Sales:Q",
-                    title="Sales",
-                    format=",.0f"
+                    title="Millions of Dollars",
+                    scale=alt.Scale(zero=True)
                 )
-            ]
-        )
-        .properties(
-            height=350,
-            title="Selected Date Range"
-        )
-    )
-
-    overview_chart = (
-        alt.Chart(brush_df)
-        .mark_line()
-        .encode(
-            x=alt.X(
-                "Date:T",
-                title="Date"
-            ),
-            y=alt.Y(
-                "Sales:Q",
-                title="Millions of Dollars",
-                scale=alt.Scale(zero=True)
+            )
+            .add_params(brush)
+            .properties(
+                height=120,
+                title="Click and drag to select a date range"
             )
         )
-        .add_params(brush)
-        .properties(
-            height=120,
-            title="Click and drag to select a date range"
+
+        interactive_chart = alt.vconcat(
+            main_chart,
+            overview_chart
         )
-    )
 
-    interactive_chart = alt.vconcat(
-        main_chart,
-        overview_chart
-    )
+        st.altair_chart(
+            interactive_chart,
+            use_container_width=True
+        )
 
-    st.altair_chart(
-        interactive_chart,
-        use_container_width=True
-    )
-
-    st.caption(
-        "Click and drag horizontally inside the lower chart. "
-        "The upper chart automatically zooms to the selected period."
-    )
+        st.caption(
+            "Click and drag horizontally inside the lower chart. "
+            "The upper chart automatically zooms to the selected period."
+        )
 
 
 # =========================================================
@@ -346,72 +366,81 @@ with tab_trend:
 
     st.header("Trend Analysis")
 
-    trend = data.rolling(
-        window=window,
-        center=True
-    ).mean()
+    if data.empty:
 
-    fig, ax = plt.subplots(figsize=(12, 5))
-
-    if show_points:
-
-        ax.plot(
-            data.index,
-            data.values,
-            marker="o",
-            markersize=3,
-            alpha=0.35,
-            label=f"{resolution} Sales"
+        st.warning(
+            "No observations are available for the selected period."
         )
 
     else:
 
+        trend = data.rolling(
+            window=trend_window,
+            center=True
+        ).mean()
+
+        fig, ax = plt.subplots(figsize=(12, 5))
+
+        if show_points:
+
+            ax.plot(
+                data.index,
+                data.values,
+                marker="o",
+                markersize=3,
+                alpha=0.35,
+                label=f"{resolution} Sales"
+            )
+
+        else:
+
+            ax.plot(
+                data.index,
+                data.values,
+                alpha=0.35,
+                label=f"{resolution} Sales"
+            )
+
         ax.plot(
-            data.index,
-            data.values,
-            alpha=0.35,
-            label=f"{resolution} Sales"
+            trend.index,
+            trend.values,
+            linewidth=2.5,
+            label=f"Rolling Trend ({trend_window_text})"
         )
 
-    ax.plot(
-        trend.index,
-        trend.values,
-        linewidth=2.5,
-        label=f"Rolling Trend ({window_text})"
-    )
+        ax.set_title("U.S. Retail Sales Trend")
+        ax.set_xlabel("Year")
+        ax.set_ylabel("Millions of Dollars")
+        ax.set_ylim(bottom=0)
+        ax.legend()
+        ax.grid(alpha=0.3)
 
-    ax.set_title("U.S. Retail Sales Trend")
-    ax.set_xlabel("Year")
-    ax.set_ylabel("Millions of Dollars")
-    ax.set_ylim(bottom=0)
-    ax.legend()
-    ax.grid(alpha=0.3)
+        st.pyplot(fig)
+        plt.close(fig)
 
-    st.pyplot(fig)
-    plt.close(fig)
+        if resolution == "Monthly":
 
-    if resolution == "Monthly":
+            st.info(
+                "A 12-month rolling mean is used because the data "
+                "are monthly. The window covers one complete annual "
+                "cycle and reduces short-term seasonal variation."
+            )
 
-        st.info(
-            "A 12-month rolling mean is used because the data are monthly. "
-            "The window covers one complete annual cycle and reduces "
-            "short-term seasonal variation."
-        )
+        elif resolution == "Quarterly":
 
-    elif resolution == "Quarterly":
+            st.info(
+                "A 4-quarter rolling mean is used because four "
+                "quarters make one year. This reduces short-term "
+                "variation while keeping the long-term trend visible."
+            )
 
-        st.info(
-            "A 4-quarter rolling mean is used because four quarters "
-            "make one year. This reduces short-term variation while "
-            "keeping the long-term trend visible."
-        )
+        else:
 
-    else:
-
-        st.info(
-            "At yearly resolution, each observation already summarizes "
-            "one complete year. Therefore, a one-year window is used."
-        )
+            st.info(
+                "At yearly resolution, each observation already "
+                "summarizes one complete year. Therefore, the yearly "
+                "series itself represents the annual trend."
+            )
 
 
 # =========================================================
@@ -480,15 +509,10 @@ with tab_seasonality:
         plt.close(fig)
 
         st.write(
-            "Seasonal decomposition is performed on the monthly series "
-            "using period = 12 because twelve monthly observations make "
-            "one annual cycle."
+            "Seasonal decomposition is performed on the monthly "
+            "series using period = 12 because twelve monthly "
+            "observations make one annual cycle."
         )
-
-
-        # -------------------------------------------------
-        # ADDITIVE DECOMPOSITION
-        # -------------------------------------------------
 
         st.subheader("Additive Seasonal Decomposition")
 
@@ -502,11 +526,6 @@ with tab_seasonality:
             "The monthly series is separated into observed, trend, "
             "seasonal, and residual components."
         )
-
-
-        # -------------------------------------------------
-        # ADDITIVE VS MULTIPLICATIVE
-        # -------------------------------------------------
 
         st.subheader(
             "Additive vs. Multiplicative Seasonal Decomposition"
@@ -566,10 +585,10 @@ with tab_seasonality:
         plt.close(fig)
 
         st.write(
-            "The additive model assumes that the seasonal effect stays "
-            "roughly constant over time. The multiplicative model assumes "
-            "that the seasonal effect changes in proportion to the level "
-            "of sales."
+            "The additive model assumes that the seasonal effect "
+            "stays roughly constant over time. The multiplicative "
+            "model assumes that the seasonal effect changes in "
+            "proportion to the level of sales."
         )
 
     else:
@@ -581,7 +600,7 @@ with tab_seasonality:
 
 
 # =========================================================
-# CACHED BOOTSTRAP FUNCTION
+# BOOTSTRAP FUNCTION — CACHED
 # =========================================================
 
 @st.cache_data
@@ -662,72 +681,103 @@ with tab_uncertainty:
 
     st.write(
         "This analysis uses a bootstrap 95% confidence interval "
-        "for the rolling mean."
+        "for a rolling mean."
     )
 
-    rolling_mean = data.rolling(
-        window=window
-    ).mean()
+    if len(data) < uncertainty_window:
 
-    lower_values, upper_values = calculate_bootstrap_intervals(
-        tuple(data.values),
-        window
-    )
+        st.warning(
+            f"The selected period does not contain enough "
+            f"{resolution.lower()} observations to calculate the "
+            f"{uncertainty_window_text} bootstrap interval. "
+            "Select a wider year range."
+        )
 
-    lower_ci = pd.Series(
-        lower_values,
-        index=data.index
-    )
+    else:
 
-    upper_ci = pd.Series(
-        upper_values,
-        index=data.index
-    )
+        rolling_mean = data.rolling(
+            window=uncertainty_window
+        ).mean()
 
-    fig, ax = plt.subplots(figsize=(12, 5))
+        lower_values, upper_values = (
+            calculate_bootstrap_intervals(
+                tuple(data.values),
+                uncertainty_window
+            )
+        )
 
-    ax.plot(
-        data.index,
-        data.values,
-        alpha=0.30,
-        label=f"{resolution} Sales"
-    )
+        lower_ci = pd.Series(
+            lower_values,
+            index=data.index
+        )
 
-    ax.plot(
-        rolling_mean.index,
-        rolling_mean.values,
-        linewidth=2.5,
-        label=f"Rolling Mean ({window_text})"
-    )
+        upper_ci = pd.Series(
+            upper_values,
+            index=data.index
+        )
 
-    ax.fill_between(
-        data.index,
-        lower_ci,
-        upper_ci,
-        alpha=0.25,
-        label="Bootstrap 95% CI for Rolling Mean"
-    )
+        valid_ci = (
+            lower_ci.notna() &
+            upper_ci.notna()
+        )
 
-    ax.set_title(
-        "Retail Sales with Bootstrap 95% Confidence Interval"
-    )
+        fig, ax = plt.subplots(figsize=(12, 5))
 
-    ax.set_xlabel("Year")
-    ax.set_ylabel("Millions of Dollars")
-    ax.set_ylim(bottom=0)
-    ax.legend()
-    ax.grid(alpha=0.3)
+        ax.plot(
+            data.index,
+            data.values,
+            alpha=0.30,
+            label=f"{resolution} Sales"
+        )
 
-    st.pyplot(fig)
-    plt.close(fig)
+        ax.plot(
+            rolling_mean.index,
+            rolling_mean.values,
+            linewidth=2.5,
+            label=f"Rolling Mean ({uncertainty_window_text})"
+        )
 
-    st.write(
-        "For each rolling window, observations are resampled with "
-        "replacement 1,000 times. The 2.5th and 97.5th percentiles "
-        "of the bootstrap means form the 95% confidence interval. "
-        "The calculation is cached so Streamlit does not repeat the "
-        "same expensive computation unnecessarily."
-    )
+        if valid_ci.any():
+
+            ax.fill_between(
+                data.index,
+                lower_ci.values,
+                upper_ci.values,
+                where=valid_ci.values,
+                alpha=0.25,
+                label="Bootstrap 95% CI for Rolling Mean"
+            )
+
+        ax.set_title(
+            "Retail Sales with Bootstrap 95% Confidence Interval"
+        )
+
+        ax.set_xlabel("Year")
+        ax.set_ylabel("Millions of Dollars")
+        ax.set_ylim(bottom=0)
+        ax.legend()
+        ax.grid(alpha=0.3)
+
+        st.pyplot(fig)
+        plt.close(fig)
+
+        st.write(
+            f"For each {uncertainty_window_text} rolling window, "
+            "observations are resampled with replacement 1,000 times. "
+            "The 2.5th and 97.5th percentiles of the bootstrap means "
+            "form the 95% confidence interval. The calculation is "
+            "cached so Streamlit does not repeat the same expensive "
+            "computation unnecessarily."
+        )
+
+        if resolution == "Yearly":
+
+            st.info(
+                "The annual trend uses yearly observations directly, "
+                "but the uncertainty analysis uses a 3-year rolling "
+                "window so that each bootstrap sample contains multiple "
+                "annual observations."
+            )
 
 
 # =========================================================
@@ -784,14 +834,14 @@ with tab_about:
     st.subheader("Temporal-Honesty Note")
 
     st.write(
-        "The original data are monthly. Quarterly and yearly values are "
-        "calculated using the mean within each period. For monthly and "
-        "quarterly views, the rolling window covers one complete year. "
-        "At yearly resolution, each point already summarizes one full "
-        "year. Sales charts use a zero-based y-axis to avoid visually "
-        "exaggerating changes. Monthly resolution is retained for "
-        "seasonal decomposition because it preserves the 12-month "
-        "annual cycle."
+        "The original data are monthly. Quarterly and yearly values "
+        "are calculated using the mean within each period. For monthly "
+        "and quarterly trend views, the rolling window covers one "
+        "complete year. At yearly resolution, each point already "
+        "summarizes one full year. Sales charts use a zero-based y-axis "
+        "to avoid visually exaggerating changes. Monthly resolution is "
+        "retained for seasonal decomposition because it preserves the "
+        "12-month annual cycle."
     )
 
     st.subheader("Caching")
@@ -801,6 +851,15 @@ with tab_about:
         "preparing the dataset and when calculating bootstrap confidence "
         "intervals. This prevents expensive operations from being "
         "repeated unnecessarily during app reruns."
+    )
+
+    st.subheader("Interactivity and State")
+
+    st.write(
+        "The sidebar provides controls for time resolution, year range, "
+        "and trend-chart observations. Streamlit session state is used "
+        "to track changes to these dashboard settings during the current "
+        "session."
     )
 
     st.subheader("Data Source")
