@@ -5,879 +5,278 @@ import matplotlib.pyplot as plt
 import altair as alt
 from statsmodels.tsa.seasonal import seasonal_decompose
 
-
-# =========================================================
-# PAGE SETUP
-# =========================================================
-
+# ---------------------------------------------------------
+# 1. Page Configuration
+# ---------------------------------------------------------
 st.set_page_config(
-    page_title="U.S. Retail Sales Interactive Dashboard",
+    page_title="U.S. Retail Sales Time Series Analysis",
     page_icon="📈",
     layout="wide"
 )
 
-st.title("U.S. Retail Sales Interactive Dashboard")
-
-st.write(
-    "Explore U.S. retail and food services sales over time. "
-    "Use the sidebar controls to change the time resolution, "
-    "filter the analysis period, and customize the visualization."
-)
-
-
-# =========================================================
-# LOAD AND PREPARE DATA — CACHED
-# =========================================================
-
-@st.cache_data
-def load_data():
-    df = pd.read_csv("RSAFSNA.csv")
-
-    df["observation_date"] = pd.to_datetime(
-        df["observation_date"],
-        errors="coerce"
-    )
-
-    df["RSAFSNA"] = pd.to_numeric(
-        df["RSAFSNA"],
-        errors="coerce"
-    )
-
-    df = df.dropna(
-        subset=["observation_date", "RSAFSNA"]
-    )
-
-    df = df.set_index("observation_date")
-    df = df.sort_index()
-
-    return df
-
-
-df = load_data()
-
-
-# =========================================================
-# SIDEBAR — THREE WIDGETS
-# =========================================================
-
-st.sidebar.header("Dashboard Controls")
-
-st.sidebar.write(
-    "Use these controls to customize the time-series analysis."
-)
-
-# Widget 1
-resolution = st.sidebar.selectbox(
-    "Time resolution",
-    ["Monthly", "Quarterly", "Yearly"],
-    key="resolution"
-)
-
-min_year = int(df.index.year.min())
-max_year = int(df.index.year.max())
-
-# Widget 2
-year_range = st.sidebar.slider(
-    "Select year range",
-    min_value=min_year,
-    max_value=max_year,
-    value=(min_year, max_year),
-    key="year_range"
-)
-
-# Widget 3
-show_points = st.sidebar.checkbox(
-    "Show observations on trend chart",
-    value=False,
-    key="show_points"
-)
-
-st.sidebar.divider()
-
-st.sidebar.caption(
-    "Data source: U.S. Census Bureau via FRED (RSAFSNA)."
-)
-
-
-# =========================================================
-# SESSION STATE
-# =========================================================
-
+# ---------------------------------------------------------
+# 2. Session State Initialization
+# ---------------------------------------------------------
 if "interaction_count" not in st.session_state:
     st.session_state.interaction_count = 0
 
-if "previous_settings" not in st.session_state:
-    st.session_state.previous_settings = (
-        resolution,
-        year_range,
-        show_points
-    )
+if "saved_ranges" not in st.session_state:
+    st.session_state.saved_ranges = []
 
-current_settings = (
-    resolution,
-    year_range,
-    show_points
+def increment_interactions():
+    st.session_state.interaction_count += 1
+
+# ---------------------------------------------------------
+# 3. Data Loading & Caching
+# ---------------------------------------------------------
+@st.cache_data
+def load_data():
+    df = pd.read_csv("RSAFSNA.csv")
+    # Clean column names
+    df.columns = [c.strip() for c in df.columns]
+    
+    # Identify date column and value column
+    date_col = "observation_date" if "observation_date" in df.columns else df.columns[0]
+    val_col = "RSAFSNA" if "RSAFSNA" in df.columns else df.columns[1]
+    
+    df[date_col] = pd.to_datetime(df[date_col])
+    df[val_col] = pd.to_numeric(df[val_col], errors="coerce")
+    df = df.dropna(subset=[val_col]).sort_values(date_col).reset_index(drop=True)
+    
+    df.rename(columns={date_col: "Date", val_col: "Sales"}, inplace=True)
+    
+    # Calculate YoY Growth (%)
+    df["YoY_Growth"] = df["Sales"].pct_change(12) * 100
+    return df
+
+try:
+    df_raw = load_data()
+except Exception as e:
+    st.error(f"Error loading 'RSAFSNA.csv': {e}. Please place the dataset in the root folder.")
+    st.stop()
+
+# ---------------------------------------------------------
+# 4. Sidebar Controls & Dynamic Resampling
+# ---------------------------------------------------------
+st.sidebar.title("⚙️ Dashboard Controls")
+
+# Resolution selection
+resolution = st.sidebar.selectbox(
+    "Time Resolution",
+    options=["Monthly", "Quarterly", "Yearly"],
+    index=0,
+    on_change=increment_interactions
 )
 
-if current_settings != st.session_state.previous_settings:
-    st.session_state.interaction_count += 1
-    st.session_state.previous_settings = current_settings
+# Year Range Slider
+min_year = int(df_raw["Date"].dt.year.min())
+max_year = int(df_raw["Date"].dt.year.max())
 
+year_range = st.sidebar.slider(
+    "Select Year Range",
+    min_value=min_year,
+    max_value=max_year,
+    value=(min_year, max_year),
+    on_change=increment_interactions
+)
 
-# =========================================================
-# FILTER DATA
-# =========================================================
+# Show observation points checkbox
+show_points = st.sidebar.checkbox(
+    "Show Observation Points",
+    value=False,
+    on_change=increment_interactions
+)
 
-filtered_df = df[
-    (df.index.year >= year_range[0]) &
-    (df.index.year <= year_range[1])
+# Bootstrap settings
+st.sidebar.markdown("---")
+st.sidebar.subheader("Bootstrap Settings")
+n_bootstraps = st.sidebar.slider(
+    "Resample Count (N)",
+    min_value=100,
+    max_value=2000,
+    value=500,
+    step=100,
+    on_change=increment_interactions
+)
+
+# ---------------------------------------------------------
+# 5. Data Processing based on Filters
+# ---------------------------------------------------------
+df_filtered = df_raw[
+    (df_raw["Date"].dt.year >= year_range[0]) & 
+    (df_raw["Date"].dt.year <= year_range[1])
 ].copy()
 
-if resolution == "Monthly":
-
-    data = (
-        filtered_df["RSAFSNA"]
-        .resample("MS")
-        .mean()
-        .dropna()
-    )
-
-    trend_window = 12
-    uncertainty_window = 12
-    trend_window_text = "12 months"
-    uncertainty_window_text = "12 months"
-
-elif resolution == "Quarterly":
-
-    data = (
-        filtered_df["RSAFSNA"]
-        .resample("QS")
-        .mean()
-        .dropna()
-    )
-
-    trend_window = 4
-    uncertainty_window = 4
-    trend_window_text = "4 quarters"
-    uncertainty_window_text = "4 quarters"
-
+# Resampling according to selection
+if resolution == "Quarterly":
+    df_resampled = df_filtered.set_index("Date").resample("QE").agg({"Sales": "mean", "YoY_Growth": "mean"}).reset_index()
+elif resolution == "Yearly":
+    df_resampled = df_filtered.set_index("Date").resample("YE").agg({"Sales": "mean", "YoY_Growth": "mean"}).reset_index()
 else:
+    df_resampled = df_filtered.copy()
 
-    data = (
-        filtered_df["RSAFSNA"]
-        .resample("YS")
-        .mean()
-        .dropna()
-    )
+# ---------------------------------------------------------
+# 6. Header & Top Metrics
+# ---------------------------------------------------------
+st.title("📈 U.S. Retail & Food Services Sales Analysis (RSAFSNA)")
+st.markdown("An interactive econometric dashboard for time-series decomposition, uncertainty modeling, and growth diagnostics.")
 
-    # Each yearly observation already summarizes a full year.
-    trend_window = 1
-    trend_window_text = "1 year"
+m1, m2, m3, m4, m5 = st.columns(5)
+m1.metric("Resolution", resolution)
+m2.metric("Start Year", year_range[0])
+m3.metric("End Year", year_range[1])
+m4.metric("Observations", len(df_resampled))
+m5.metric("Interactions", st.session_state.interaction_count)
 
-    # A multi-observation window is required for a meaningful
-    # bootstrap interval.
-    uncertainty_window = 3
-    uncertainty_window_text = "3 years"
+# Save Bookmark Feature (Session State Requirement)
+st.sidebar.markdown("---")
+if st.sidebar.button("🔖 Bookmark Current View"):
+    bookmark_label = f"{resolution} ({year_range[0]}-{year_range[1]})"
+    if bookmark_label not in st.session_state.saved_ranges:
+        st.session_state.saved_ranges.append(bookmark_label)
 
+if st.session_state.saved_ranges:
+    st.sidebar.subheader("Saved Bookmarks")
+    for b in st.session_state.saved_ranges:
+        st.sidebar.text(f"• {b}")
 
-# =========================================================
-# SUMMARY METRICS — COLUMNS
-# =========================================================
+# ---------------------------------------------------------
+# 7. Main Analysis Tabs
+# ---------------------------------------------------------
+tab_overview, tab_trend, tab_season, tab_bootstrap, tab_data, tab_about = st.tabs([
+    "📊 Overview", 
+    "📈 Trend Analysis", 
+    "🍂 Seasonality", 
+    "🎲 Uncertainty (Bootstrap)", 
+    "📋 Filtered Data", 
+    "ℹ️ About"
+])
 
-st.subheader("Current Selection")
-
-col1, col2, col3, col4 = st.columns(4)
-
-col1.metric(
-    "Resolution",
-    resolution
-)
-
-col2.metric(
-    "Start Year",
-    year_range[0]
-)
-
-col3.metric(
-    "End Year",
-    year_range[1]
-)
-
-col4.metric(
-    "Observations",
-    len(data)
-)
-
-st.caption(
-    f"Trend window: {trend_window_text}. "
-    f"Dashboard settings changed "
-    f"{st.session_state.interaction_count} time(s) during this session."
-)
-
-
-# =========================================================
-# TABS — LAYOUT
-# =========================================================
-
-(
-    tab_overview,
-    tab_trend,
-    tab_seasonality,
-    tab_uncertainty,
-    tab_data,
-    tab_about
-) = st.tabs(
-    [
-        "Overview",
-        "Trend",
-        "Seasonality",
-        "Uncertainty",
-        "Data",
-        "About"
-    ]
-)
-
-
-# =========================================================
-# TAB 1 — OVERVIEW
-# =========================================================
-
+# --- Tab 1: Overview ---
 with tab_overview:
-
-    st.header("Retail Sales Over Time")
-
-    st.write(
-        f"The chart below displays U.S. retail sales using "
-        f"{resolution.lower()} resolution from {year_range[0]} "
-        f"through {year_range[1]}."
+    st.subheader("Sales Trajectory & Interactive Range Selector")
+    
+    # Altair Interactive Plot
+    brush = alt.selection_interval(encodings=['x'])
+    
+    base = alt.Chart(df_resampled).mark_line(color="#1f77b4", strokeWidth=2).encode(
+        x=alt.X("Date:T", title="Date"),
+        y=alt.Y("Sales:Q", title="Sales (Millions of $)", scale=alt.Scale(zero=True)),
+        tooltip=["Date:T", "Sales:Q", "YoY_Growth:Q"]
     )
-
-    if data.empty:
-
-        st.warning(
-            "No observations are available for the selected period."
+    
+    if show_points:
+        points = alt.Chart(df_resampled).mark_circle(size=30, color="#d62728").encode(
+            x="Date:T",
+            y="Sales:Q"
         )
-
+        chart = base + points
     else:
+        chart = base
 
-        fig, ax = plt.subplots(figsize=(12, 5))
+    upper = chart.encode(
+        x=alt.X("Date:T", scale=alt.Scale(domain=brush))
+    ).properties(width=800, height=350, title="Zoomed View (Drag on Context Chart Below)")
 
-        ax.plot(
-            data.index,
-            data.values
-        )
+    lower = base.properties(
+        width=800, height=100, title="Context Chart (Click & Drag to Zoom)"
+    ).add_params(brush)
 
-        ax.set_title(
-            f"U.S. Retail Sales — {resolution} Resolution"
-        )
+    st.altair_chart(upper & lower, use_container_width=True)
 
-        ax.set_xlabel("Year")
-        ax.set_ylabel("Millions of Dollars")
-        ax.set_ylim(bottom=0)
-        ax.grid(alpha=0.3)
-
-        st.pyplot(fig)
-        plt.close(fig)
-
-        st.subheader("Interactive Date-Range Brush")
-
-        brush_df = data.reset_index()
-        brush_df.columns = ["Date", "Sales"]
-
-        brush = alt.selection_interval(
-            encodings=["x"],
-            name="DateRange"
-        )
-
-        main_chart = (
-            alt.Chart(brush_df)
-            .mark_line()
-            .encode(
-                x=alt.X(
-                    "Date:T",
-                    title="Date",
-                    scale=alt.Scale(domain=brush)
-                ),
-                y=alt.Y(
-                    "Sales:Q",
-                    title="Millions of Dollars",
-                    scale=alt.Scale(zero=True)
-                ),
-                tooltip=[
-                    alt.Tooltip(
-                        "Date:T",
-                        title="Date"
-                    ),
-                    alt.Tooltip(
-                        "Sales:Q",
-                        title="Sales",
-                        format=",.0f"
-                    )
-                ]
-            )
-            .properties(
-                height=350,
-                title="Selected Date Range"
-            )
-        )
-
-        overview_chart = (
-            alt.Chart(brush_df)
-            .mark_line()
-            .encode(
-                x=alt.X(
-                    "Date:T",
-                    title="Date"
-                ),
-                y=alt.Y(
-                    "Sales:Q",
-                    title="Millions of Dollars",
-                    scale=alt.Scale(zero=True)
-                )
-            )
-            .add_params(brush)
-            .properties(
-                height=120,
-                title="Click and drag to select a date range"
-            )
-        )
-
-        interactive_chart = alt.vconcat(
-            main_chart,
-            overview_chart
-        )
-
-        st.altair_chart(
-            interactive_chart,
-            use_container_width=True
-        )
-
-        st.caption(
-            "Click and drag horizontally inside the lower chart. "
-            "The upper chart automatically zooms to the selected period."
-        )
-
-
-# =========================================================
-# TAB 2 — TREND
-# =========================================================
-
+# --- Tab 2: Trend Analysis ---
 with tab_trend:
+    st.subheader("Moving Average & Trend Diagnostics")
+    
+    window_size = 12 if resolution == "Monthly" else (4 if resolution == "Quarterly" else 3)
+    df_resampled["Rolling_Avg"] = df_resampled["Sales"].rolling(window=window_size, min_periods=1).mean()
+    
+    fig, ax = plt.subplots(figsize=(10, 4.5))
+    ax.plot(df_resampled["Date"], df_resampled["Sales"], label="Observed Sales", color="gray", alpha=0.5)
+    ax.plot(df_resampled["Date"], df_resampled["Rolling_Avg"], label=f"{window_size}-Period Moving Average", color="navy", lw=2)
+    ax.set_ylabel("Sales (Millions of $)")
+    ax.set_ylim(bottom=0)
+    ax.set_title("Long-Term Sales Trend")
+    ax.legend()
+    ax.grid(True, linestyle="--", alpha=0.5)
+    st.pyplot(fig)
 
-    st.header("Trend Analysis")
-
-    if data.empty:
-
-        st.warning(
-            "No observations are available for the selected period."
-        )
-
+# --- Tab 3: Seasonality ---
+with tab_season:
+    st.subheader("Seasonal Decomposition (Additive vs Multiplicative)")
+    
+    if resolution != "Monthly":
+        st.warning("Seasonality analysis is best conducted on Monthly data. Switch to 'Monthly' resolution for detailed decomposition.")
     else:
-
-        trend = data.rolling(
-            window=trend_window,
-            center=True
-        ).mean()
-
-        fig, ax = plt.subplots(figsize=(12, 5))
-
-        if show_points:
-
-            ax.plot(
-                data.index,
-                data.values,
-                marker="o",
-                markersize=3,
-                alpha=0.35,
-                label=f"{resolution} Sales"
-            )
-
+        decomp_type = st.radio("Decomposition Model", ["additive", "multiplicative"], horizontal=True)
+        
+        df_decomp = df_filtered.set_index("Date")["Sales"].dropna()
+        if len(df_decomp) >= 24:
+            res = seasonal_decompose(df_decomp, model=decomp_type, period=12)
+            
+            fig, (ax1, ax2, ax3, ax4) = plt.subplots(4, 1, figsize=(10, 8), sharex=True)
+            ax1.plot(res.observed, color="black"); ax1.set_ylabel("Observed")
+            ax2.plot(res.trend, color="blue"); ax2.set_ylabel("Trend")
+            ax3.plot(res.seasonal, color="green"); ax3.set_ylabel("Seasonal")
+            ax4.plot(res.resid, color="red"); ax4.set_ylabel("Residuals")
+            plt.tight_layout()
+            st.pyplot(fig)
         else:
-
-            ax.plot(
-                data.index,
-                data.values,
-                alpha=0.35,
-                label=f"{resolution} Sales"
-            )
-
-        ax.plot(
-            trend.index,
-            trend.values,
-            linewidth=2.5,
-            label=f"Rolling Trend ({trend_window_text})"
-        )
-
-        ax.set_title("U.S. Retail Sales Trend")
-        ax.set_xlabel("Year")
-        ax.set_ylabel("Millions of Dollars")
-        ax.set_ylim(bottom=0)
-        ax.legend()
-        ax.grid(alpha=0.3)
-
-        st.pyplot(fig)
-        plt.close(fig)
-
-        if resolution == "Monthly":
-
-            st.info(
-                "A 12-month rolling mean is used because the data "
-                "are monthly. The window covers one complete annual "
-                "cycle and reduces short-term seasonal variation."
-            )
-
-        elif resolution == "Quarterly":
-
-            st.info(
-                "A 4-quarter rolling mean is used because four "
-                "quarters make one year. This reduces short-term "
-                "variation while keeping the long-term trend visible."
-            )
-
-        else:
-
-            st.info(
-                "At yearly resolution, each observation already "
-                "summarizes one complete year. Therefore, the yearly "
-                "series itself represents the annual trend."
-            )
-
-
-# =========================================================
-# TAB 3 — SEASONALITY
-# =========================================================
-
-with tab_seasonality:
-
-    st.header("Seasonality")
-
-    monthly = (
-        filtered_df["RSAFSNA"]
-        .resample("MS")
-        .mean()
-        .dropna()
-    )
-
-    if len(monthly) >= 24:
-
-        additive = seasonal_decompose(
-            monthly,
-            model="additive",
-            period=12
-        )
-
-        seasonal_cycle = (
-            additive.seasonal
-            .groupby(additive.seasonal.index.month)
-            .mean()
-        )
-
-        month_names = [
-            "Jan", "Feb", "Mar", "Apr",
-            "May", "Jun", "Jul", "Aug",
-            "Sep", "Oct", "Nov", "Dec"
-        ]
-
-        st.subheader("Average Annual Seasonal Pattern")
-
-        fig, ax = plt.subplots(figsize=(10, 5))
-
-        ax.plot(
-            month_names,
-            seasonal_cycle.values,
-            marker="o"
-        )
-
-        ax.axhline(
-            0,
-            linewidth=1
-        )
-
-        ax.set_title(
-            "Average Annual Seasonal Pattern"
-        )
-
-        ax.set_xlabel("Month")
-
-        ax.set_ylabel(
-            "Seasonal Effect (Millions of Dollars)"
-        )
-
-        ax.grid(alpha=0.3)
-
-        st.pyplot(fig)
-        plt.close(fig)
-
-        st.write(
-            "Seasonal decomposition is performed on the monthly "
-            "series using period = 12 because twelve monthly "
-            "observations make one annual cycle."
-        )
-
-        st.subheader("Additive Seasonal Decomposition")
-
-        fig = additive.plot()
-        fig.set_size_inches(12, 8)
-
-        st.pyplot(fig)
-        plt.close(fig)
-
-        st.caption(
-            "The monthly series is separated into observed, trend, "
-            "seasonal, and residual components."
-        )
-
-        st.subheader(
-            "Additive vs. Multiplicative Seasonal Decomposition"
-        )
-
-        multiplicative = seasonal_decompose(
-            monthly,
-            model="multiplicative",
-            period=12
-        )
-
-        fig, axes = plt.subplots(
-            2,
-            1,
-            figsize=(12, 7),
-            sharex=True
-        )
-
-        axes[0].plot(
-            additive.resid.index,
-            additive.resid.values
-        )
-
-        axes[0].axhline(
-            0,
-            linewidth=1
-        )
-
-        axes[0].set_title(
-            "Additive Model Residuals"
-        )
-
-        axes[0].set_ylabel("Residual")
-        axes[0].grid(alpha=0.3)
-
-        axes[1].plot(
-            multiplicative.resid.index,
-            multiplicative.resid.values
-        )
-
-        axes[1].axhline(
-            1,
-            linewidth=1
-        )
-
-        axes[1].set_title(
-            "Multiplicative Model Residuals"
-        )
-
-        axes[1].set_xlabel("Year")
-        axes[1].set_ylabel("Residual Ratio")
-        axes[1].grid(alpha=0.3)
-
-        plt.tight_layout()
-
-        st.pyplot(fig)
-        plt.close(fig)
-
-        st.write(
-            "The additive model assumes that the seasonal effect "
-            "stays roughly constant over time. The multiplicative "
-            "model assumes that the seasonal effect changes in "
-            "proportion to the level of sales."
-        )
-
-    else:
-
-        st.warning(
-            "Select a range containing at least two full years "
-            "to display seasonal decomposition."
-        )
-
-
-# =========================================================
-# BOOTSTRAP FUNCTION — CACHED
-# =========================================================
-
-@st.cache_data
-def calculate_bootstrap_intervals(
-    values_tuple,
-    window,
-    n_boot=1000,
-    confidence=0.95
-):
-
-    values_array = np.asarray(
-        values_tuple,
-        dtype=float
-    )
-
-    lower = np.full(
-        len(values_array),
-        np.nan
-    )
-
-    upper = np.full(
-        len(values_array),
-        np.nan
-    )
-
-    rng = np.random.default_rng(42)
-
-    alpha = 1 - confidence
-
-    for i in range(
-        window - 1,
-        len(values_array)
-    ):
-
-        current_values = values_array[
-            i - window + 1:
-            i + 1
-        ]
-
-        current_values = current_values[
-            ~np.isnan(current_values)
-        ]
-
-        if len(current_values) < 2:
-            continue
-
-        samples = rng.choice(
-            current_values,
-            size=(
-                n_boot,
-                len(current_values)
-            ),
-            replace=True
-        )
-
-        means = samples.mean(axis=1)
-
-        lower[i] = np.quantile(
-            means,
-            alpha / 2
-        )
-
-        upper[i] = np.quantile(
-            means,
-            1 - alpha / 2
-        )
-
-    return lower, upper
-
-
-# =========================================================
-# TAB 4 — UNCERTAINTY
-# =========================================================
-
-with tab_uncertainty:
-
-    st.header("Uncertainty")
-
-    st.write(
-        "This analysis uses a bootstrap 95% confidence interval "
-        "for a rolling mean."
-    )
-
-    if len(data) < uncertainty_window:
-
-        st.warning(
-            f"The selected period does not contain enough "
-            f"{resolution.lower()} observations to calculate the "
-            f"{uncertainty_window_text} bootstrap interval. "
-            "Select a wider year range."
-        )
-
-    else:
-
-        rolling_mean = data.rolling(
-            window=uncertainty_window
-        ).mean()
-
-        lower_values, upper_values = (
-            calculate_bootstrap_intervals(
-                tuple(data.values),
-                uncertainty_window
-            )
-        )
-
-        lower_ci = pd.Series(
-            lower_values,
-            index=data.index
-        )
-
-        upper_ci = pd.Series(
-            upper_values,
-            index=data.index
-        )
-
-        valid_ci = (
-            lower_ci.notna() &
-            upper_ci.notna()
-        )
-
-        fig, ax = plt.subplots(figsize=(12, 5))
-
-        ax.plot(
-            data.index,
-            data.values,
-            alpha=0.30,
-            label=f"{resolution} Sales"
-        )
-
-        ax.plot(
-            rolling_mean.index,
-            rolling_mean.values,
-            linewidth=2.5,
-            label=f"Rolling Mean ({uncertainty_window_text})"
-        )
-
-        if valid_ci.any():
-
-            ax.fill_between(
-                data.index,
-                lower_ci.values,
-                upper_ci.values,
-                where=valid_ci.values,
-                alpha=0.25,
-                label="Bootstrap 95% CI for Rolling Mean"
-            )
-
-        ax.set_title(
-            "Retail Sales with Bootstrap 95% Confidence Interval"
-        )
-
-        ax.set_xlabel("Year")
-        ax.set_ylabel("Millions of Dollars")
-        ax.set_ylim(bottom=0)
-        ax.legend()
-        ax.grid(alpha=0.3)
-
-        st.pyplot(fig)
-        plt.close(fig)
-
-        st.write(
-            f"For each {uncertainty_window_text} rolling window, "
-            "observations are resampled with replacement 1,000 times. "
-            "The 2.5th and 97.5th percentiles of the bootstrap means "
-            "form the 95% confidence interval. The calculation is "
-            "cached so Streamlit does not repeat the same expensive "
-            "computation unnecessarily."
-        )
-
-        if resolution == "Yearly":
-
-            st.info(
-                "The annual trend uses yearly observations directly, "
-                "but the uncertainty analysis uses a 3-year rolling "
-                "window so that each bootstrap sample contains multiple "
-                "annual observations."
-            )
-
-
-# =========================================================
-# TAB 5 — DATA
-# =========================================================
-
+            st.error("Insufficient data points for seasonal decomposition (Minimum 24 months required).")
+
+# --- Tab 4: Bootstrap Uncertainty ---
+with tab_bootstrap:
+    st.subheader("Moving Average Confidence Interval via Bootstrap Resampling")
+    
+    @st.cache_data
+    def run_bootstrap(data_series, n_iterations, window):
+        np.random.seed(42)
+        n = len(data_series)
+        boot_means = []
+        
+        for _ in range(n_iterations):
+            sample = np.random.choice(data_series, size=n, replace=True)
+            rolling = pd.Series(sample).rolling(window=window, min_periods=1).mean()
+            boot_means.append(rolling.values)
+            
+        boot_means = np.array(boot_means)
+        lower_bound = np.percentile(boot_means, 2.5, axis=0)
+        upper_bound = np.percentile(boot_means, 97.5, axis=0)
+        return lower_bound, upper_bound
+
+    window = 12 if resolution == "Monthly" else 4
+    lower, upper = run_bootstrap(df_resampled["Sales"].values, n_bootstraps, window)
+    
+    fig, ax = plt.subplots(figsize=(10, 4.5))
+    ax.plot(df_resampled["Date"], df_resampled["Rolling_Avg"], color="navy", label="Rolling Mean")
+    ax.fill_between(df_resampled["Date"], lower, upper, color="skyblue", alpha=0.4, label="95% Confidence Interval")
+    ax.set_ylabel("Sales (Millions of $)")
+    ax.set_ylim(bottom=0)
+    ax.set_title(f"Bootstrap Uncertainty Estimation ({n_bootstraps} Iterations)")
+    ax.legend()
+    ax.grid(True, linestyle="--", alpha=0.5)
+    st.pyplot(fig)
+
+# --- Tab 5: Data ---
 with tab_data:
-
-    st.header("Filtered Data")
-
-    display_df = data.reset_index()
-    display_df.columns = ["Date", "Sales"]
-
-    st.dataframe(
-        display_df,
-        use_container_width=True
-    )
-
-    csv = display_df.to_csv(
-        index=False
-    ).encode("utf-8")
-
+    st.subheader("Filtered Dataset & Download")
+    st.dataframe(df_resampled, use_container_width=True)
+    
+    csv_data = df_resampled.to_csv(index=False).encode('utf-8')
     st.download_button(
-        label="Download Filtered Data as CSV",
-        data=csv,
-        file_name="filtered_retail_sales.csv",
+        label="📥 Download CSV Dataset",
+        data=csv_data,
+        file_name=f"RSAFSNA_filtered_{resolution}.csv",
         mime="text/csv"
     )
 
-
-# =========================================================
-# TAB 6 — ABOUT
-# =========================================================
-
+# --- Tab 6: About ---
 with tab_about:
-
-    st.header("About This Dashboard")
-
-    st.write(
-        "This interactive Streamlit dashboard extends a time-series "
-        "analysis of U.S. retail and food services sales. Users can "
-        "change the temporal resolution, select a year range, and "
-        "control how observations appear in the trend visualization."
-    )
-
-    st.subheader("Analysis")
-
-    st.write(
-        "The dashboard includes the original time-series visualization, "
-        "rolling trend analysis, seasonal decomposition, an interactive "
-        "date-range brush, and bootstrap uncertainty intervals."
-    )
-
-    st.subheader("Temporal-Honesty Note")
-
-    st.write(
-        "The original data are monthly. Quarterly and yearly values "
-        "are calculated using the mean within each period. For monthly "
-        "and quarterly trend views, the rolling window covers one "
-        "complete year. At yearly resolution, each point already "
-        "summarizes one full year. Sales charts use a zero-based y-axis "
-        "to avoid visually exaggerating changes. Monthly resolution is "
-        "retained for seasonal decomposition because it preserves the "
-        "12-month annual cycle."
-    )
-
-    st.subheader("Caching")
-
-    st.write(
-        "The application uses Streamlit caching when loading and "
-        "preparing the dataset and when calculating bootstrap confidence "
-        "intervals. This prevents expensive operations from being "
-        "repeated unnecessarily during app reruns."
-    )
-
-    st.subheader("Interactivity and State")
-
-    st.write(
-        "The sidebar provides controls for time resolution, year range, "
-        "and trend-chart observations. Streamlit session state is used "
-        "to track changes to these dashboard settings during the current "
-        "session."
-    )
-
-    st.subheader("Data Source")
-
-    st.write(
-        "U.S. Census Bureau via FRED — Advance Retail Sales: "
-        "Retail Trade and Food Services (RSAFSNA), Monthly, "
-        "Not Seasonally Adjusted."
-    )
-
-
-# =========================================================
-# FOOTER
-# =========================================================
-
-st.divider()
-
-st.caption(
-    "U.S. Retail Sales Interactive Dashboard | "
-    "Built with Streamlit"
-)
+    st.markdown("""
+    ### ℹ️ About this Application
+    * **Data Source:** U.S. Census Bureau / FRED (Advance Retail Sales: Retail and Food Services, Total - `RSAFSNA`).
+    * **Methodology:** 
+        * **Resampling:** Monthly, Quarterly, and Yearly time aggregation.
+        * **Decomposition:** Time series classical additive & multiplicative decomposition using `statsmodels`.
+        * **Uncertainty Estimation:** Non-parametric Bootstrap resampling to estimate 95% confidence intervals around rolling statistics.
+    """)
